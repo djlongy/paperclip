@@ -36,6 +36,9 @@ export function AuthPage() {
     queryFn: () => healthApi.get(),
     retry: false,
   });
+  const oidc = healthQuery.data?.signIn?.oidc ?? null;
+  const passwordEnabled = healthQuery.data?.signIn?.passwordEnabled ?? true;
+  const oidcError = searchParams.get("error");
   const { data: session, isLoading: isSessionLoading, error: sessionError } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
@@ -71,6 +74,20 @@ export function AuthPage() {
       // Sign-in can change accounts, so drop the list outright.
       await queryClient.resetQueries({ queryKey: queryKeys.companies.all });
       navigate(nextPath, { replace: true });
+    },
+    onError: (err) => {
+      setError(err instanceof Error ? err.message : "Authentication failed");
+    },
+  });
+
+  const oidcMutation = useMutation({
+    mutationFn: async () => {
+      if (!oidc) return;
+      await authApi.signInOidc({
+        providerId: oidc.providerId,
+        callbackURL: nextPath,
+        errorCallbackURL: "/auth",
+      });
     },
     onError: (err) => {
       setError(err instanceof Error ? err.message : "Authentication failed");
@@ -120,6 +137,22 @@ export function AuthPage() {
               : "Create an account for this instance. Email confirmation is not required in v1."}
           </p>
 
+          {oidc && (
+            <Button
+              type="button"
+              className="mt-6 w-full"
+              disabled={oidcMutation.isPending}
+              onClick={() => oidcMutation.mutate()}
+            >
+              {oidcMutation.isPending ? "Redirecting…" : `Continue with ${oidc.label}`}
+            </Button>
+          )}
+          {oidcError && !error && (
+            <p role="alert" className="mt-3 text-xs text-destructive">
+              Sign-in was refused ({oidcError.replace(/_/g, " ").toLowerCase()}).
+            </p>
+          )}
+          {passwordEnabled && (
           <form
             className="mt-6 space-y-4"
             method="post"
@@ -203,7 +236,9 @@ export function AuthPage() {
                   : "Create Account"}
             </Button>
           </form>
+          )}
 
+          {passwordEnabled && (
           <div className="mt-5 text-sm text-muted-foreground">
             {mode === "sign_in" ? "Need an account?" : "Already have an account?"}{" "}
             <button
@@ -217,6 +252,7 @@ export function AuthPage() {
               {mode === "sign_in" ? "Create one" : "Sign in"}
             </button>
           </div>
+          )}
         </div>
       </div>
 

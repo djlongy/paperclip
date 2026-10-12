@@ -34,6 +34,11 @@ export type HealthStatus = {
   deploymentExposure?: "private" | "public";
   localAiLoginSupported?: boolean;
   authReady?: boolean;
+  /** Which sign-in methods the login page offers. Absent on older servers. */
+  signIn?: {
+    passwordEnabled: boolean;
+    oidc: { providerId: string; label: string } | null;
+  };
   bootstrapStatus?: "ready" | "bootstrap_pending";
   bootstrapInviteActive?: boolean;
   /** The unclaimed Cloud app is ready; this response did not probe SQL. */

@@ -13,6 +13,7 @@ const signInEmailMock = vi.hoisted(() => vi.fn());
 const signUpEmailMock = vi.hoisted(() => vi.fn());
 const healthMock = vi.hoisted(() => vi.fn());
 const beginCloudSignInMock = vi.hoisted(() => vi.fn());
+const signInOidcMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../api/health", () => ({ healthApi: { get: () => healthMock() } }));
 vi.mock("@/lib/cloud-sign-in", () => ({
@@ -25,6 +26,7 @@ vi.mock("../api/auth", () => ({
     getSession: () => getSessionMock(),
     signInEmail: (input: unknown) => signInEmailMock(input),
     signUpEmail: (input: unknown) => signUpEmailMock(input),
+    signInOidc: (input: unknown) => signInOidcMock(input),
   },
 }));
 
@@ -98,6 +100,7 @@ describe("AuthPage", () => {
     beginCloudSignInMock.mockReturnValue(true);
     signInEmailMock.mockResolvedValue(undefined);
     signUpEmailMock.mockResolvedValue(undefined);
+    signInOidcMock.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -308,5 +311,31 @@ describe("AuthPage", () => {
     await act(async () => {
       root.unmount();
     });
+  });
+
+  it("offers the OIDC button and can hide the password form", async () => {
+    healthMock.mockResolvedValue({
+      status: "ok",
+      deploymentMode: "authenticated",
+      signIn: { passwordEnabled: false, oidc: { providerId: "oidc", label: "Keycloak" } },
+    });
+    const { root } = await mount();
+
+    const button = Array.from(container.querySelectorAll("button")).find((el) =>
+      el.textContent?.includes("Continue with Keycloak"),
+    );
+    expect(button).toBeDefined();
+    expect(container.querySelector('input[name="password"]')).toBeNull();
+
+    await act(async () => {
+      button!.click();
+    });
+    expect(signInOidcMock).toHaveBeenCalledWith({
+      providerId: "oidc",
+      callbackURL: "/",
+      errorCallbackURL: "/auth",
+    });
+
+    await act(async () => root.unmount());
   });
 });
