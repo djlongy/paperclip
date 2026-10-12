@@ -1,3 +1,4 @@
+import { resolveSignInOptions } from "../auth/oidc.js";
 import { supportsLocalAiLogin } from "../services/local-ai-login-policy.js";
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { Router } from "express";
@@ -393,6 +394,7 @@ export function healthRoutes(
         deploymentMode: opts.deploymentMode,
         deploymentExposure: opts.deploymentExposure,
         localAiLoginSupported: supportsLocalAiLogin(opts),
+        signIn: resolveSignInOptions(),
         commit,
         bootstrapStatus,
         bootstrapInviteActive,
@@ -418,6 +420,7 @@ export function healthRoutes(
       deploymentExposure: opts.deploymentExposure,
         localAiLoginSupported: supportsLocalAiLogin(opts),
       authReady: opts.authReady,
+      signIn: resolveSignInOptions(),
       bootstrapStatus,
       bootstrapInviteActive,
       features: {

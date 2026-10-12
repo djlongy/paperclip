@@ -11,13 +11,20 @@ import { AuthPage } from "./Auth";
 const getSessionMock = vi.hoisted(() => vi.fn());
 const signInEmailMock = vi.hoisted(() => vi.fn());
 const signUpEmailMock = vi.hoisted(() => vi.fn());
+const signInOidcMock = vi.hoisted(() => vi.fn());
+const getHealthMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../api/auth", () => ({
   authApi: {
     getSession: () => getSessionMock(),
     signInEmail: (input: unknown) => signInEmailMock(input),
     signUpEmail: (input: unknown) => signUpEmailMock(input),
+    signInOidc: (input: unknown) => signInOidcMock(input),
   },
+}));
+
+vi.mock("../api/health", () => ({
+  healthApi: { get: () => getHealthMock() },
 }));
 
 // The ASCII art animation drives a canvas/requestAnimationFrame loop that adds
@@ -88,6 +95,8 @@ describe("AuthPage", () => {
     getSessionMock.mockResolvedValue(null);
     signInEmailMock.mockResolvedValue(undefined);
     signUpEmailMock.mockResolvedValue(undefined);
+    signInOidcMock.mockResolvedValue(undefined);
+    getHealthMock.mockResolvedValue({ status: "ok" });
   });
 
   afterEach(() => {
@@ -247,10 +256,36 @@ describe("AuthPage", () => {
       email: "jane@example.com",
       password: "supersecret",
     });
-    expect(queryClient.getQueryState(queryKeys.health)?.isInvalidated).toBe(true);
+    // The page itself reads this query, so invalidation shows up as a refetch.
+    expect(getHealthMock.mock.calls.length).toBeGreaterThan(1);
 
     await act(async () => {
       root.unmount();
     });
+  });
+
+  it("offers the OIDC button and can hide the password form", async () => {
+    getHealthMock.mockResolvedValue({
+      status: "ok",
+      signIn: { passwordEnabled: false, oidc: { providerId: "oidc", label: "Keycloak" } },
+    });
+    const { root } = await mount();
+
+    const button = Array.from(container.querySelectorAll("button")).find((el) =>
+      el.textContent?.includes("Continue with Keycloak"),
+    );
+    expect(button).toBeDefined();
+    expect(container.querySelector('input[name="password"]')).toBeNull();
+
+    await act(async () => {
+      button!.click();
+    });
+    expect(signInOidcMock).toHaveBeenCalledWith({
+      providerId: "oidc",
+      callbackURL: "/",
+      errorCallbackURL: "/auth",
+    });
+
+    await act(async () => root.unmount());
   });
 });

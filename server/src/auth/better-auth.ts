@@ -11,6 +11,13 @@ import {
   authVerifications,
 } from "@paperclipai/db";
 import type { Config } from "../config.js";
+import {
+  buildOidcAuthOptions,
+  isPasswordLoginEnabled,
+  probeOidcDiscovery,
+  resolveOidcAuthConfig,
+  setOidcAvailable,
+} from "./oidc.js";
 import { resolvePaperclipInstanceId } from "../home-paths.js";
 import {
   workspaceLoginHandoffPlugin,
@@ -257,36 +264,16 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
     publicUrl,
   });
 
-  const authConfig = {
-    baseURL: baseUrl,
-    secret,
-    trustedOrigins,
-    database: drizzleAdapter(db, {
-      provider: "pg",
-      schema: {
-        user: authUsers,
-        session: authSessions,
-        account: authAccounts,
-        verification: authVerifications,
-      },
-    }),
-    emailAndPassword: {
-      enabled: true,
-      requireEmailVerification: false,
-      disableSignUp: config.authDisableSignUp,
-    },
-    rateLimit: buildBetterAuthRateLimitOptions({
-      deploymentMode: config.deploymentMode,
-      deploymentExposure: config.deploymentExposure,
-      override: process.env.PAPERCLIP_AUTH_RATE_LIMIT_ENABLED,
-    }),
-    advanced: buildBetterAuthAdvancedOptions({ disableSecureCookies }),
-    // Registered only for a managed workspace instance: the plugin is what makes
-    // `Open workspace` password-independent, and a control-plane instance that
-    // was never handed a workspace key must not expose the exchange at all.
-    ...(resolveWorkspaceHandoffIdentity(config)
-      ? {
-          plugins: [
+  const oidcConfig = resolveOidcAuthConfig();
+  const buildInstance = (oidcOptions: ReturnType<typeof buildOidcAuthOptions> | null): BetterAuthInstance => {
+    const handoffIdentity = resolveWorkspaceHandoffIdentity(config);
+    const plugins = [
+      ...(oidcOptions?.plugins ?? []),
+      // Registered only for a managed workspace instance: the plugin is what makes
+      // `Open workspace` password-independent, and a control-plane instance that
+      // was never handed a workspace key must not expose the exchange at all.
+      ...(handoffIdentity
+        ? [
             workspaceLoginHandoffPlugin({
               db,
               // Re-resolved per exchange so a hot restart cannot keep validating
@@ -300,56 +287,121 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
                   origin: null,
                 },
             }),
-          ],
-        }
-      : {}),
+          ]
+        : []),
+    ];
+
+    const authConfig = {
+      baseURL: baseUrl,
+      secret,
+      trustedOrigins,
+      database: drizzleAdapter(db, {
+        provider: "pg",
+        schema: {
+          user: authUsers,
+          session: authSessions,
+          account: authAccounts,
+          verification: authVerifications,
+        },
+      }),
+      emailAndPassword: {
+        enabled: isPasswordLoginEnabled(),
+        requireEmailVerification: false,
+        disableSignUp: config.authDisableSignUp,
+      },
+      rateLimit: buildBetterAuthRateLimitOptions({
+        deploymentMode: config.deploymentMode,
+        deploymentExposure: config.deploymentExposure,
+        override: process.env.PAPERCLIP_AUTH_RATE_LIMIT_ENABLED,
+      }),
+      advanced: buildBetterAuthAdvancedOptions({ disableSecureCookies }),
+      ...(oidcOptions ? { user: oidcOptions.user, account: oidcOptions.account } : {}),
+      ...(plugins.length ? { plugins } : {}),
+    };
+
+    if (!baseUrl) {
+      delete (authConfig as { baseURL?: string }).baseURL;
+    }
+
+    const defaultAuth = betterAuth(authConfig);
+    const supportsManagedLoopbackAuth = Boolean(
+      !disableSecureCookies &&
+      isHttpsUrl(publicUrl) &&
+      isHttpsUrl(managedRuntimePublicUrl),
+    );
+    if (!supportsManagedLoopbackAuth) return defaultAuth;
+
+    // Better Auth fixes both the Secure attribute and the __Secure- name prefix
+    // when an instance is created. Keep the public instance unchanged and route
+    // only managed HTTP-loopback requests through a cookie-compatible instance.
+    const loopbackAuth = betterAuth({
+      ...authConfig,
+      advanced: buildBetterAuthAdvancedOptions({ disableSecureCookies: true }),
+    });
+    const cookieSecurityInput = {
+      deploymentMode: config.deploymentMode,
+      deploymentExposure: config.deploymentExposure,
+      authBaseUrlMode: config.authBaseUrlMode,
+      authPublicBaseUrl: config.authPublicBaseUrl,
+      publicUrl,
+      managedRuntimePublicUrl,
+    };
+
+    return {
+      handler: (request) => {
+        const auth = shouldDisableSecureAuthCookies({
+          ...cookieSecurityInput,
+          requestUrl: request.url,
+        }) ? loopbackAuth : defaultAuth;
+        return auth.handler(request);
+      },
+      api: {
+        getSession: (input) => {
+          const auth = shouldDisableSecureAuthCookies({
+            ...cookieSecurityInput,
+            requestUrl: requestUrlFromHeaders(input.headers),
+          }) ? loopbackAuth : defaultAuth;
+          return auth.api.getSession(input);
+        },
+      },
+    };
   };
 
-  if (!baseUrl) {
-    delete (authConfig as { baseURL?: string }).baseURL;
-  }
+  if (!oidcConfig) return buildInstance(null);
 
-  const defaultAuth = betterAuth(authConfig);
-  const supportsManagedLoopbackAuth = Boolean(
-    !disableSecureCookies &&
-    isHttpsUrl(publicUrl) &&
-    isHttpsUrl(managedRuntimePublicUrl),
-  );
-  if (!supportsManagedLoopbackAuth) return defaultAuth;
-
-  // Better Auth fixes both the Secure attribute and the __Secure- name prefix
-  // when an instance is created. Keep the public instance unchanged and route
-  // only managed HTTP-loopback requests through a cookie-compatible instance.
-  const loopbackAuth = betterAuth({
-    ...authConfig,
-    advanced: buildBetterAuthAdvancedOptions({ disableSecureCookies: true }),
-  });
-  const cookieSecurityInput = {
-    deploymentMode: config.deploymentMode,
-    deploymentExposure: config.deploymentExposure,
-    authBaseUrlMode: config.authBaseUrlMode,
-    authPublicBaseUrl: config.authPublicBaseUrl,
-    publicUrl,
-    managedRuntimePublicUrl,
+  // Discovery happens inside the plugin's async init, and a failure there would
+  // reject unhandled and stop the server. So the plugin is only registered once
+  // the discovery document has been fetched; until then (and after a failed
+  // attempt, retried at most every 30 s on a request) password sign-in and
+  // agent keys work and SSO is reported unavailable.
+  let current = buildInstance(null);
+  let ssoLive = false;
+  let probing = false;
+  let lastProbeAt = 0;
+  const ensureSso = () => {
+    if (ssoLive || probing || Date.now() - lastProbeAt < 30_000) return;
+    probing = true;
+    lastProbeAt = Date.now();
+    void probeOidcDiscovery(oidcConfig)
+      .then((ok) => {
+        if (!ok) return;
+        current = buildInstance(buildOidcAuthOptions(oidcConfig, { disableSignUp: config.authDisableSignUp }));
+        ssoLive = true;
+        setOidcAvailable(true);
+      })
+      .finally(() => {
+        probing = false;
+      });
   };
+  setOidcAvailable(false);
+  ensureSso();
 
   return {
     handler: (request) => {
-      const auth = shouldDisableSecureAuthCookies({
-        ...cookieSecurityInput,
-        requestUrl: request.url,
-      }) ? loopbackAuth : defaultAuth;
-      return auth.handler(request);
+      ensureSso();
+      return current.handler(request);
     },
-    api: {
-      getSession: (input) => {
-        const auth = shouldDisableSecureAuthCookies({
-          ...cookieSecurityInput,
-          requestUrl: requestUrlFromHeaders(input.headers),
-        }) ? loopbackAuth : defaultAuth;
-        return auth.api.getSession(input);
-      },
-    },
+    api: { getSession: (input) => current.api!.getSession!(input) },
   };
 }
 

@@ -173,6 +173,17 @@ export const authApi = {
     await authPost("/sign-in/email", input);
   },
 
+  signInOidc: async (input: { providerId: string; callbackURL: string; errorCallbackURL: string }) => {
+    // Better Auth registers a generic OAuth provider as a social provider.
+    const payload = (await authPost("/sign-in/social", {
+      provider: input.providerId,
+      callbackURL: input.callbackURL,
+      errorCallbackURL: input.errorCallbackURL,
+    })) as { url?: string } | null;
+    if (!payload?.url) throw new Error("The identity provider did not return a sign-in URL");
+    window.location.assign(payload.url);
+  },
+
   signUpEmail: async (input: { name: string; email: string; password: string }) => {
     await authPost("/sign-up/email", input);
   },
