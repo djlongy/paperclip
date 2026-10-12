@@ -11,6 +11,7 @@ import {
   authVerifications,
 } from "@paperclipai/db";
 import type { Config } from "../config.js";
+import { buildOidcPlugin, isPasswordLoginEnabled, OIDC_PROVIDER_ID, resolveOidcAuthConfig } from "./oidc.js";
 import { resolvePaperclipInstanceId } from "../home-paths.js";
 import {
   workspaceLoginHandoffPlugin,
@@ -257,6 +258,32 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
     publicUrl,
   });
 
+  const oidcConfig = resolveOidcAuthConfig();
+  const handoffIdentity = resolveWorkspaceHandoffIdentity(config);
+  const plugins = [
+    ...(oidcConfig ? [buildOidcPlugin(oidcConfig, { disableSignUp: config.authDisableSignUp })] : []),
+    // Registered only for a managed workspace instance: the plugin is what makes
+    // `Open workspace` password-independent, and a control-plane instance that
+    // was never handed a workspace key must not expose the exchange at all.
+    ...(handoffIdentity
+      ? [
+          workspaceLoginHandoffPlugin({
+            db,
+            // Re-resolved per exchange so a hot restart cannot keep validating
+            // against an origin the control plane has since republished.
+            resolveExpectedIdentity: () =>
+              resolveWorkspaceHandoffIdentity(config) ?? {
+                key: null,
+                instanceId: null,
+                executionWorkspaceId: null,
+                companyId: null,
+                origin: null,
+              },
+          }),
+        ]
+      : []),
+  ];
+
   const authConfig = {
     baseURL: baseUrl,
     secret,
@@ -271,7 +298,7 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
       },
     }),
     emailAndPassword: {
-      enabled: true,
+      enabled: isPasswordLoginEnabled(),
       requireEmailVerification: false,
       disableSignUp: config.authDisableSignUp,
     },
@@ -281,28 +308,23 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
       override: process.env.PAPERCLIP_AUTH_RATE_LIMIT_ENABLED,
     }),
     advanced: buildBetterAuthAdvancedOptions({ disableSecureCookies }),
-    // Registered only for a managed workspace instance: the plugin is what makes
-    // `Open workspace` password-independent, and a control-plane instance that
-    // was never handed a workspace key must not expose the exchange at all.
-    ...(resolveWorkspaceHandoffIdentity(config)
+    // The operator chose this identity provider, so its email (never reported
+    // unverified, see assertOidcGroupAllowed) links to the existing account
+    // that has the same address. Local accounts are never email-verified, and
+    // while self-service sign-up is open anyone could have registered the
+    // address first, so the local check only relaxes once sign-up is closed.
+    ...(oidcConfig
       ? {
-          plugins: [
-            workspaceLoginHandoffPlugin({
-              db,
-              // Re-resolved per exchange so a hot restart cannot keep validating
-              // against an origin the control plane has since republished.
-              resolveExpectedIdentity: () =>
-                resolveWorkspaceHandoffIdentity(config) ?? {
-                  key: null,
-                  instanceId: null,
-                  executionWorkspaceId: null,
-                  companyId: null,
-                  origin: null,
-                },
-            }),
-          ],
+          account: {
+            accountLinking: {
+              enabled: true,
+              trustedProviders: [OIDC_PROVIDER_ID],
+              requireLocalEmailVerified: !config.authDisableSignUp,
+            },
+          },
         }
       : {}),
+    ...(plugins.length ? { plugins } : {}),
   };
 
   if (!baseUrl) {
