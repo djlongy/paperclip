@@ -93,6 +93,15 @@ describe("OIDC user validation", () => {
     }
   });
 
+  it("accepts a missing email_verified claim only when PAPERCLIP_AUTH_OIDC_TRUST_EMAIL is true", () => {
+    const trusting = resolveOidcAuthConfig({ ...baseEnv, PAPERCLIP_AUTH_OIDC_TRUST_EMAIL: "true" })!;
+    expect(validateOidcUserInfo(oauthInput({}), trusting)).toBeUndefined();
+    expect(buildOidcProviderConfig(trusting).mapProfileToUser?.({})).toEqual({ emailVerified: true });
+    for (const bad of [false, "false", 0]) {
+      expect(validateOidcUserInfo(oauthInput({ email_verified: bad }), trusting)?.error).toBe("email_not_verified");
+    }
+  });
+
   it("accepts a matching group with or without the Keycloak leading slash", () => {
     expect(validateOidcUserInfo(oauthInput({ email_verified: true, groups: ["/paperclip-users"] }), grouped)).toBeUndefined();
     expect(validateOidcUserInfo(oauthInput({ email_verified: true, groups: ["paperclip-users", "x"] }), grouped)).toBeUndefined();

@@ -183,7 +183,7 @@ configuration fails closed.
 
 Optional single sign-on for `authenticated` deployments, built on Better Auth's generic OAuth plugin (authorization code flow with PKCE, ID token verified against the provider's JWKS). Off unless the issuer, client id and client secret are all set. The redirect URI to register with the provider is `<public URL>/api/auth/callback/oidc`.
 
-A returning user is matched to an existing account by email. The provider is trusted for this, so an address it flags `email_verified: false` is refused. With `PAPERCLIP_AUTH_DISABLE_SIGN_UP=true`, OIDC cannot create new users either unless `PAPERCLIP_AUTH_OIDC_ALLOW_SIGN_UP=true`. Agent API keys are unaffected. The provider must send a boolean `email_verified: true`; a missing or non-boolean claim is refused. A refused sign-in (wrong group, unverified email) redirects to the login page with `?error=`. Denied, linked and created sign-ins are written to the server log with `audit: true` and an `auth.oidc.*` event name. If the provider cannot be reached at start-up, the server runs without SSO (password sign-in and agent keys keep working) and retries on a later request, at most every 30 seconds.
+A returning user is matched to an existing account by email. The provider is trusted for this, so an address it flags `email_verified: false` is refused. With `PAPERCLIP_AUTH_DISABLE_SIGN_UP=true`, OIDC cannot create new users either unless `PAPERCLIP_AUTH_OIDC_ALLOW_SIGN_UP=true`. Agent API keys are unaffected. The provider must send a boolean `email_verified: true`; a missing or non-boolean claim is refused unless `PAPERCLIP_AUTH_OIDC_TRUST_EMAIL=true`, which accepts a missing claim only. A refused sign-in (wrong group, unverified email) redirects to the login page with `?error=`. Denied, linked and created sign-ins are written to the server log with `audit: true` and an `auth.oidc.*` event name. If the provider cannot be reached at start-up, the server runs without SSO (password sign-in and agent keys keep working) and retries on a later request, at most every 30 seconds.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -195,6 +195,7 @@ A returning user is matched to an existing account by email. The provider is tru
 | `PAPERCLIP_AUTH_OIDC_REQUIRED_GROUP` | (unset) | When set, sign-in needs this value in the groups claim. A leading `/` (Keycloak group paths) is ignored |
 | `PAPERCLIP_AUTH_OIDC_GROUPS_CLAIM` | `groups` | Claim holding groups or roles. A dotted path such as `realm_access.roles` is allowed |
 | `PAPERCLIP_AUTH_OIDC_ALLOW_SIGN_UP` | follows `PAPERCLIP_AUTH_DISABLE_SIGN_UP` | `true` lets a first OIDC sign-in create a user, `false` allows only users that already exist. A new user has no company access until invited |
+| `PAPERCLIP_AUTH_OIDC_TRUST_EMAIL` | `false` | `true` accepts a profile that has no `email_verified` claim, which Microsoft Entra ID omits by default. An explicit `email_verified: false` is still refused |
 | `PAPERCLIP_AUTH_PASSWORD_LOGIN` | `true` | `false` disables email/password sign-in and hides the form. Ignored while OIDC is not configured |
 
 ## Secrets

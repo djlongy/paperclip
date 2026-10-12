@@ -17,6 +17,8 @@ import { logger } from "../middleware/logger.js";
  *   PAPERCLIP_AUTH_OIDC_ALLOW_SIGN_UP   `true`/`false` lets a first OIDC sign-in create a user; default
  *                                       follows PAPERCLIP_AUTH_DISABLE_SIGN_UP. A new user has no
  *                                       company access until invited.
+ *   PAPERCLIP_AUTH_OIDC_TRUST_EMAIL     `true` accepts a profile with no `email_verified` claim (Microsoft Entra ID
+ *                                       omits it by default); an explicit `false` is still refused. Default off.
  *   PAPERCLIP_AUTH_PASSWORD_LOGIN       `false` turns email/password sign-in off
  */
 export const OIDC_PROVIDER_ID = "oidc";
@@ -30,6 +32,7 @@ export type OidcAuthConfig = {
   requiredGroup: string | null;
   groupsClaim: string;
   allowSignUp: boolean | null;
+  trustEmail: boolean;
 };
 
 export type SignInOptions = {
@@ -56,6 +59,7 @@ export function resolveOidcAuthConfig(env: NodeJS.ProcessEnv = process.env): Oid
     allowSignUp: env.PAPERCLIP_AUTH_OIDC_ALLOW_SIGN_UP === undefined
       ? null
       : env.PAPERCLIP_AUTH_OIDC_ALLOW_SIGN_UP.trim().toLowerCase() === "true",
+    trustEmail: env.PAPERCLIP_AUTH_OIDC_TRUST_EMAIL?.trim().toLowerCase() === "true",
   };
 }
 
@@ -145,7 +149,8 @@ export function validateOidcUserInfo(
     audit("auth.oidc.denied", { reason: error, email });
     return { error, errorDescription };
   };
-  if (profile.email_verified !== true) {
+  const emailTrusted = profile.email_verified === true || (config.trustEmail && profile.email_verified === undefined);
+  if (!emailTrusted) {
     return deny("email_not_verified", "The identity provider has not verified your email address");
   }
   if (config.requiredGroup && !claimValues(profile, config.groupsClaim).includes(config.requiredGroup)) {
@@ -175,7 +180,9 @@ export function buildOidcProviderConfig(
     // Reject a login whose ID token fails signature, issuer, audience or nonce checks.
     requireIdTokenVerification: true,
     // Strictly boolean, so linking never sees a truthy string; validateOidcUserInfo refuses anything else.
-    mapProfileToUser: (profile) => ({ emailVerified: profile.email_verified === true }),
+    mapProfileToUser: (profile) => ({
+      emailVerified: profile.email_verified === true || (config.trustEmail && profile.email_verified === undefined),
+    }),
   };
 }
 
